@@ -91,7 +91,7 @@ def launch_instances(
     instance_type: str,
     region: str,
     count: int,
-    ssh_key: str,
+    ssh_keys: list[str],
     name: str,
     filesystem_ids: list[str],
     dry_run: bool = False,
@@ -100,7 +100,7 @@ def launch_instances(
     body = {
         "instance_type_name": instance_type,
         "region_name": region,
-        "ssh_key_names": [ssh_key],
+        "ssh_key_names": ssh_keys,
         "quantity": count,
         "name": name,
     }
@@ -320,7 +320,7 @@ def poll_and_launch(args) -> None:
                     instance_type=type_name,
                     region=region,
                     count=count,
-                    ssh_key=args.ssh_key,
+                    ssh_keys=args.ssh_keys,
                     name=name,
                     filesystem_ids=args.filesystems or [],
                     dry_run=args.dry_run,
@@ -389,8 +389,8 @@ def parse_args():
         help="Number of instances to launch.",
     )
     grab.add_argument(
-        "--ssh-key", required=True,
-        help="Name of the SSH key registered on Lambda Cloud.",
+        "--ssh-keys", nargs="+", required=True, metavar="KEY",
+        help="One or more SSH key names registered on Lambda Cloud.",
     )
     grab.add_argument(
         "--region", default=None,

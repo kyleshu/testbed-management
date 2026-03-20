@@ -36,7 +36,7 @@ Shows all instance types, GPU/vCPU/RAM specs, and which regions currently have c
 python lambda_grab.py grab \
     --instance-types gpu_8x_h100_sxm4 gpu_8x_a100 \
     --count 2 \
-    --ssh-key <your-lambda-ssh-key-name> \
+    --ssh-keys key1 key2 \
     --name my-experiment \
     [--region us-west-1] \
     [--poll-interval 30] \
@@ -46,7 +46,7 @@ python lambda_grab.py grab \
 
 - `--instance-types` — ordered preference list; the first type with available capacity wins
 - `--count` — number of instances to launch
-- `--ssh-key` — name of the SSH key registered in your Lambda Cloud account
+- `--ssh-keys` — one or more SSH key names registered in your Lambda Cloud account
 - `--region` — preferred region; falls back to any available region if not found
 - `--poll-interval` — seconds between API polls (default: 30)
 - `--name` — base name for launched instances (default: `exp-<timestamp>`)
