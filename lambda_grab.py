@@ -6,7 +6,7 @@ Usage:
     python lambda_grab.py \
         --instance-types gpu_8x_h100_sxm4 gpu_8x_a100 \
         --count 2 \
-        --ssh-key my-key \
+        --ssh-key my-key-name \
         [--region us-west-1] \
         [--poll-interval 30] \
         [--name my-experiment] \
@@ -91,16 +91,17 @@ def launch_instances(
     instance_type: str,
     region: str,
     count: int,
-    ssh_keys: list[str],
+    ssh_key: str,
     name: str,
     filesystem_ids: list[str],
     dry_run: bool = False,
 ) -> list[str]:
     """Launch `count` instances and return their IDs."""
+    # Lambda Cloud only supports a single SSH key per launch request.
     body = {
         "instance_type_name": instance_type,
         "region_name": region,
-        "ssh_key_names": ssh_keys,
+        "ssh_key_names": [ssh_key],
         "quantity": count,
         "name": name,
     }
@@ -320,7 +321,7 @@ def poll_and_launch(args) -> None:
                     instance_type=type_name,
                     region=region,
                     count=count,
-                    ssh_keys=args.ssh_keys,
+                    ssh_key=args.ssh_key,
                     name=name,
                     filesystem_ids=args.filesystems or [],
                     dry_run=args.dry_run,
@@ -389,8 +390,8 @@ def parse_args():
         help="Number of instances to launch.",
     )
     grab.add_argument(
-        "--ssh-keys", nargs="+", required=True, metavar="KEY",
-        help="One or more SSH key names registered on Lambda Cloud.",
+        "--ssh-key", required=True, metavar="KEY",
+        help="SSH key name registered on Lambda Cloud (Lambda only supports one key per launch).",
     )
     grab.add_argument(
         "--region", default=None,
