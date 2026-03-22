@@ -7,11 +7,17 @@ Usage:
         --instance-types gpu_8x_h100_sxm4 gpu_8x_a100 \
         --count 2 \
         --ssh-key my-key-name \
+        [--extra-ssh-keys key2 key3] \
+        [--ssh-key-path ~/.ssh/id_rsa] \
         [--region us-west-1] \
         [--poll-interval 30] \
         [--name my-experiment] \
         [--filesystems fs-abc123] \
         [--dry-run]
+
+    --ssh-key is used for the launch request (Lambda only supports one key at
+    launch time). Once instances are active, --extra-ssh-keys are fetched by
+    name from the Lambda API and injected into each node's authorized_keys.
 
 Notifications (optional env vars):
     SLACK_WEBHOOK_URL   — post to a Slack channel when instances are grabbed
@@ -25,7 +31,9 @@ Auth:
 import argparse
 import json
 import os
+import shlex
 import smtplib
+import subprocess
 import sys
 import time
 import urllib.request
@@ -115,6 +123,34 @@ def launch_instances(
 def get_instance(instance_id: str) -> dict:
     result = _request("GET", f"/instances/{instance_id}")
     return result.get("data", {})
+
+
+def list_ssh_keys() -> list[dict]:
+    """Return all SSH keys registered on the Lambda account.
+
+    Each entry is a dict with 'id', 'name', and 'public_key'.
+    """
+    result = _request("GET", "/ssh-keys")
+    return result.get("data", [])
+
+
+def get_public_keys_by_name(key_names: list[str]) -> list[str]:
+    """Look up public key material for the given key names from Lambda.
+
+    Returns a list of public key strings (one per matched name).
+    Warns and skips any names not found in the account.
+    """
+    all_keys = list_ssh_keys()
+    by_name = {k["name"]: k["public_key"] for k in all_keys if "name" in k and "public_key" in k}
+
+    public_keys = []
+    for name in key_names:
+        if name in by_name:
+            public_keys.append(by_name[name])
+        else:
+            available = list(by_name.keys())
+            print(f"  [warn] SSH key '{name}' not found in Lambda account. Available: {available}")
+    return public_keys
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +252,61 @@ def wait_for_instances(instance_ids: list[str], timeout: int = 600) -> list[dict
             raise RuntimeError(f"One or more instances failed: {statuses}")
         time.sleep(15)
     raise TimeoutError("Instances did not become active within timeout.")
+
+
+# ---------------------------------------------------------------------------
+# Extra SSH key injection (post-launch)
+# ---------------------------------------------------------------------------
+
+def inject_extra_ssh_keys(
+    instances: list[dict],
+    extra_public_keys: list[str],
+    ssh_key_path: str | None = None,
+) -> None:
+    """Append extra public keys to authorized_keys on each active instance.
+
+    Connects via SSH using the launch key (from the agent or --ssh-key-path)
+    and pipes the key material into ~/.ssh/authorized_keys.
+    """
+    if not extra_public_keys:
+        return
+
+    keys_block = "\n".join(extra_public_keys) + "\n"
+    print(f"\nInjecting {len(extra_public_keys)} extra SSH key(s) into {len(instances)} instance(s)…")
+
+    for inst in instances:
+        ip = inst.get("ip")
+        if not ip:
+            print(f"  [warn] Instance {inst.get('id')} has no public IP, skipping key injection")
+            continue
+
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=30",
+            "-o", "BatchMode=yes",
+        ]
+        if ssh_key_path:
+            ssh_cmd += ["-i", ssh_key_path]
+        ssh_cmd += [f"ubuntu@{ip}", "tee -a ~/.ssh/authorized_keys > /dev/null"]
+
+        print(f"  {ip} … ", end="", flush=True)
+        try:
+            subprocess.run(
+                ssh_cmd,
+                input=keys_block,
+                text=True,
+                check=True,
+                timeout=60,
+            )
+            print("ok")
+        except subprocess.CalledProcessError as exc:
+            print(f"failed (exit {exc.returncode})")
+            print(f"    [warn] Could not inject keys into {ip}. You can do it manually:")
+            for key in extra_public_keys:
+                print(f"    echo {shlex.quote(key)} >> ~/.ssh/authorized_keys")
+        except subprocess.TimeoutExpired:
+            print("timed out")
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +426,15 @@ def poll_and_launch(args) -> None:
 
                 instances = wait_for_instances(instance_ids)
 
+                # Inject extra SSH keys fetched by name from Lambda
+                if getattr(args, "extra_ssh_keys", None):
+                    extra_public_keys = get_public_keys_by_name(args.extra_ssh_keys)
+                    inject_extra_ssh_keys(
+                        instances,
+                        extra_public_keys,
+                        ssh_key_path=getattr(args, "ssh_key_path", None),
+                    )
+
                 summary_lines = [f"Grabbed {count}× {type_name} in {region}", ""]
                 for i, inst in enumerate(instances):
                     ip = inst.get("ip", "N/A")
@@ -391,7 +491,15 @@ def parse_args():
     )
     grab.add_argument(
         "--ssh-key", required=True, metavar="KEY",
-        help="SSH key name registered on Lambda Cloud (Lambda only supports one key per launch).",
+        help="SSH key name registered on Lambda Cloud used for the launch request (Lambda only supports one key at launch).",
+    )
+    grab.add_argument(
+        "--extra-ssh-keys", nargs="+", default=[], metavar="KEY",
+        help="Additional SSH key names registered on Lambda Cloud to inject into each instance after launch.",
+    )
+    grab.add_argument(
+        "--ssh-key-path", default=None, metavar="PATH",
+        help="Path to the private key file for --ssh-key (used to connect when injecting extra keys). Defaults to your SSH agent.",
     )
     grab.add_argument(
         "--region", default=None,
