@@ -36,8 +36,10 @@ Shows all instance types, GPU/vCPU/RAM specs, and which regions currently have c
 python lambda_grab.py grab \
     --instance-types gpu_8x_h100_sxm4 gpu_8x_a100 \
     --count 2 \
-    --ssh-keys key1 key2 \
+    --ssh-key my-key \
     --name my-experiment \
+    [--extra-ssh-keys key2 key3] \
+    [--ssh-key-path ~/.ssh/id_rsa] \
     [--region us-west-1] \
     [--poll-interval 30] \
     [--filesystems fs-abc123] \
@@ -46,7 +48,9 @@ python lambda_grab.py grab \
 
 - `--instance-types` — ordered preference list; the first type with available capacity wins
 - `--count` — number of instances to launch
-- `--ssh-keys` — one or more SSH key names registered in your Lambda Cloud account
+- `--ssh-key` — SSH key name registered in your Lambda Cloud account used for the launch request (Lambda only supports one key at launch)
+- `--extra-ssh-keys` — additional key names to inject into each instance after launch (fetched from Lambda by name and appended to `authorized_keys`)
+- `--ssh-key-path` — path to the private key file for `--ssh-key`, used when injecting extra keys (defaults to your SSH agent)
 - `--region` — preferred region; falls back to any available region if not found
 - `--poll-interval` — seconds between API polls (default: 30)
 - `--name` — base name for launched instances (default: `exp-<timestamp>`)
