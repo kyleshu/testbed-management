@@ -396,72 +396,96 @@ def poll_and_launch(args) -> None:
         print("  DRY RUN — no instances will actually be launched.")
     print()
 
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            instance_types = list_instance_types()
-            match = find_candidate(instance_types, wanted, args.region)
+    all_instances: list[dict] = []
+    locked_type: str | None = None
+    locked_region: str | None = None
 
-            if match:
-                type_name, region = match
-                print(f"[{_ts()}] CAPACITY FOUND: {type_name} in {region}")
+    for instance_num in range(1, count + 1):
+        print(f"[{_ts()}] Acquiring instance {instance_num}/{count}…")
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                instance_types = list_instance_types()
 
-                print(f"Launching {count} instance(s)…")
-                instance_ids = launch_instances(
-                    instance_type=type_name,
-                    region=region,
-                    count=count,
-                    ssh_key=args.ssh_key,
-                    name=name,
-                    filesystem_ids=args.filesystems or [],
-                    dry_run=args.dry_run,
-                )
+                if locked_type and locked_region:
+                    # Stay on the same type+region for consistency
+                    info = instance_types.get(locked_type)
+                    regions = [r.get("name", "") for r in info.get("regions_with_capacity_available", [])] if info else []
+                    match = (locked_type, locked_region) if locked_region in regions else None
+                    if not match:
+                        print(f"[{_ts()}] Attempt {attempt}: {locked_type} in {locked_region} no longer has capacity. Retrying in {args.poll_interval}s…")
+                else:
+                    match = find_candidate(instance_types, wanted, args.region)
+                    if not match:
+                        print(f"[{_ts()}] Attempt {attempt}: no capacity for {wanted}. Retrying in {args.poll_interval}s…")
 
-                if args.dry_run:
-                    print("  [dry-run] Launch call complete. Exiting.")
-                    return
+                if match:
+                    type_name, region = match
+                    if locked_type is None:
+                        locked_type = type_name
+                        locked_region = region
 
-                print(f"  Launched instance IDs: {instance_ids}")
+                    print(f"[{_ts()}] CAPACITY FOUND: {type_name} in {region}")
+                    print(f"Launching instance {instance_num}/{count}…")
 
-                instances = wait_for_instances(instance_ids)
-
-                # Inject extra SSH keys fetched by name from Lambda
-                if getattr(args, "extra_ssh_keys", None):
-                    extra_public_keys = get_public_keys_by_name(args.extra_ssh_keys)
-                    inject_extra_ssh_keys(
-                        instances,
-                        extra_public_keys,
-                        ssh_key_path=getattr(args, "ssh_key_path", None),
+                    instance_ids = launch_instances(
+                        instance_type=type_name,
+                        region=region,
+                        count=1,
+                        ssh_key=args.ssh_key,
+                        name=name,
+                        filesystem_ids=args.filesystems or [],
+                        dry_run=args.dry_run,
                     )
 
-                summary_lines = [f"Grabbed {count}× {type_name} in {region}", ""]
-                for i, inst in enumerate(instances):
+                    if args.dry_run:
+                        print(f"  [dry-run] Launch call complete for instance {instance_num}/{count}.")
+                        break
+
+                    print(f"  Launched instance ID: {instance_ids}")
+
+                    instances = wait_for_instances(instance_ids)
+                    inst = instances[0]
+                    all_instances.append(inst)
+
+                    # Inject extra SSH keys fetched by name from Lambda
+                    if getattr(args, "extra_ssh_keys", None):
+                        extra_public_keys = get_public_keys_by_name(args.extra_ssh_keys)
+                        inject_extra_ssh_keys(
+                            instances,
+                            extra_public_keys,
+                            ssh_key_path=getattr(args, "ssh_key_path", None),
+                        )
+
                     ip = inst.get("ip", "N/A")
                     priv = inst.get("private_ip", "N/A")
                     iid = inst.get("id", "?")
-                    summary_lines.append(f"  Instance {i+1}: {iid}  public={ip}  private={priv}")
-                    summary_lines.append(f"    SSH: ssh ubuntu@{ip}")
+                    notify(
+                        f"Grabbed instance {instance_num}/{count}: {type_name} in {region}\n"
+                        f"  ID: {iid}  public={ip}  private={priv}\n"
+                        f"  SSH: ssh ubuntu@{ip}"
+                    )
+                    break
 
-                notify("\n".join(summary_lines))
-
-                if count > 1:
-                    net_info = print_network_setup(instances, name)
-                    if net_info:
-                        notify(f"Private network — add to /etc/hosts on each node:\n{net_info}")
-
+            except KeyboardInterrupt:
+                print("\nInterrupted by user. Exiting.")
+                if all_instances:
+                    print(f"Grabbed {len(all_instances)}/{count} instance(s) before interruption.")
                 return
+            except Exception as exc:
+                print(f"[{_ts()}] Error (will retry): {exc}")
 
-            else:
-                print(f"[{_ts()}] Attempt {attempt}: no capacity for {wanted}. Retrying in {args.poll_interval}s…")
+            time.sleep(args.poll_interval)
 
-        except KeyboardInterrupt:
-            print("\nInterrupted by user. Exiting.")
-            return
-        except Exception as exc:
-            print(f"[{_ts()}] Error (will retry): {exc}")
+    if args.dry_run:
+        print(f"  [dry-run] All {count} launch call(s) complete. Exiting.")
+        return
 
-        time.sleep(args.poll_interval)
+    if count > 1 and all_instances:
+        net_info = print_network_setup(all_instances, name)
+        if net_info:
+            notify(f"Private network — add to /etc/hosts on each node:\n{net_info}")
 
 
 # ---------------------------------------------------------------------------
