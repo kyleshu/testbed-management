@@ -67,6 +67,38 @@ python lambda_grab.py grab \
 
 ### Private networking
 
+## `lambda_terminate.py`
+
+Terminates Lambda Cloud instances by ID, or tears down everything currently running.
+
+### Usage
+
+```bash
+# List currently running instances (with IDs)
+python lambda_terminate.py list
+
+# Terminate specific instances
+python lambda_terminate.py terminate --ids i-abc123 i-def456
+
+# Terminate ALL running instances (prompts to confirm)
+python lambda_terminate.py terminate --all
+
+# Skip the confirmation prompt
+python lambda_terminate.py terminate --all --yes
+
+# Preview without actually terminating
+python lambda_terminate.py terminate --all --dry-run
+```
+
+- `--ids` — one or more instance IDs to terminate
+- `--all` — terminate every running instance on the account
+- `--yes` / `-y` — skip the interactive confirmation prompt
+- `--dry-run` — print what would be terminated without making the API call
+
+Requires `LAMBDA_API_KEY` (same as `lambda_grab.py`).
+
+---
+
 When multiple instances are launched, the script prints `/etc/hosts` entries and a one-liner to run on each node. Lambda instances in the same region share a `10.x.x.x` private network automatically — no VPN or overlay needed.
 
 ```
