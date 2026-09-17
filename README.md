@@ -43,6 +43,7 @@ python lambda_grab.py grab \
     [--region us-west-1] \
     [--poll-interval 30] \
     [--filesystems fs-abc123] \
+    [--each] \
     [--dry-run]
 ```
 
@@ -52,10 +53,18 @@ python lambda_grab.py grab \
 - `--extra-ssh-keys` — additional key names to inject into each instance after launch (fetched from Lambda by name and appended to `authorized_keys`)
 - `--ssh-key-path` — path to the private key file for `--ssh-key`, used when injecting extra keys (defaults to your SSH agent)
 - `--region` — preferred region; falls back to any available region if not found
-- `--poll-interval` — seconds between API polls (default: 30)
+- `--poll-interval` — seconds between API polls, fractional allowed (default: 30)
 - `--name` — base name for launched instances (default: `exp-<timestamp>`)
 - `--filesystems` — Lambda filesystem names to attach (optional)
+- `--each` — treat every `--instance-types` entry as its own target and launch `--count` of **each** (instead of the first available). One `/instance-types` request per interval serves all targets, so polling stays within Lambda's 1 req/s limit (despite the nominal 1 req/s, use `--poll-interval 2`: 1 s and 1.5 s both hit Cloudflare 429 bans within about a minute; 429s trigger exponential backoff); launches run in background threads so polling doesn't stall
 - `--dry-run` — print what would happen without actually launching
+
+Example: poll 1x, 2x and 8x B200 every 2 s and grab one of each:
+
+```bash
+python lambda_grab.py grab --each --count 1 --ssh-key my-key --poll-interval 2 \
+    --instance-types gpu_1x_b200_sxm6 gpu_2x_b200_sxm6 gpu_8x_b200_sxm6
+```
 
 ### Notifications
 

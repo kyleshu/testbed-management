@@ -492,6 +492,109 @@ def poll_and_launch(args) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _report_launched(args, type_name: str, region: str, instance_ids: list[str]) -> None:
+    """Wait for a launched instance, inject keys, notify (runs in a thread)."""
+    try:
+        instances = wait_for_instances(instance_ids)
+        if args.extra_ssh_keys:
+            inject_extra_ssh_keys(
+                instances,
+                get_public_keys_by_name(args.extra_ssh_keys),
+                ssh_key_path=args.ssh_key_path,
+            )
+        for inst in instances:
+            ip = inst.get("ip", "N/A")
+            notify(
+                f"Grabbed {type_name} in {region}\n"
+                f"  ID: {inst.get('id', '?')}  public={ip}  private={inst.get('private_ip', 'N/A')}\n"
+                f"  SSH: ssh ubuntu@{ip}"
+            )
+    except Exception as exc:
+        notify(f"{type_name} {instance_ids} in {region} launched but did not come up: {exc}")
+
+
+def poll_each(args) -> None:
+    """
+    Treat every --instance-types entry as an independent target and launch
+    --count instances of EACH (or N, when the entry is written "TYPE:N"). A single /instance-types request per poll
+    serves all targets, so the API rate limit (1 req/s) is shared, not multiplied.
+    Launches run in background threads so polling never stalls.
+    """
+    import threading
+
+    base = args.name or f"exp-{int(time.time())}"
+    # "TYPE:N" asks for N of that type; a bare "TYPE" uses --count.
+    remaining = {}
+    for entry in args.instance_types:
+        type_name, _, want = entry.partition(":")
+        remaining[type_name] = int(want) if want else args.count
+    threads: list[threading.Thread] = []
+
+    print(f"[{_ts()}] Polling every {args.poll_interval}s for: "
+          + ", ".join(f"{n}× {t}" for t, n in remaining.items()))
+    if args.dry_run:
+        print("  DRY RUN — no instances will actually be launched.")
+
+    attempt = 0
+    backoff = 0.0
+    try:
+        while any(remaining.values()):
+            attempt += 1
+            started = time.monotonic()
+            try:
+                instance_types = list_instance_types()
+                for type_name, left in remaining.items():
+                    if not left:
+                        continue
+                    match = find_candidate(instance_types, [type_name], args.region)
+                    if not match:
+                        continue
+                    region = match[1]
+                    print(f"[{_ts()}] CAPACITY FOUND: {type_name} in {region}", flush=True)
+                    try:
+                        instance_ids = launch_instances(
+                            instance_type=type_name,
+                            region=region,
+                            count=1,
+                            ssh_key=args.ssh_key,
+                            name=f"{base}-{type_name}",
+                            filesystem_ids=args.filesystems or [],
+                            dry_run=args.dry_run,
+                        )
+                    except Exception as exc:
+                        # Capacity races and launch rate limits are common; keep polling for it.
+                        print(f"[{_ts()}] Launch of {type_name} failed, still polling: {exc}", flush=True)
+                        continue
+                    remaining[type_name] -= 1
+                    print(f"[{_ts()}] {type_name}: launched {instance_ids} "
+                          f"({remaining[type_name]} left)", flush=True)
+                    if args.dry_run:
+                        continue
+                    t = threading.Thread(
+                        target=_report_launched,
+                        args=(args, type_name, region, instance_ids),
+                    )
+                    t.start()
+                    threads.append(t)
+                if attempt % 60 == 0:
+                    print(f"[{_ts()}] Attempt {attempt}: still waiting for "
+                          f"{ {k: v for k, v in remaining.items() if v} }", flush=True)
+                backoff = 0.0
+            except Exception as exc:
+                if "HTTP 429" in str(exc):
+                    # Cloudflare rate-limit ban (1015): hammering keeps it alive, so back off.
+                    backoff = min(max(backoff * 2, 5.0), 120.0)
+                    print(f"[{_ts()}] Rate limited (429); backing off {backoff:.0f}s", flush=True)
+                    time.sleep(backoff)
+                else:
+                    print(f"[{_ts()}] Error (will retry): {exc}", flush=True)
+            time.sleep(max(0.0, args.poll_interval - (time.monotonic() - started)))
+    except KeyboardInterrupt:
+        print("\nInterrupted; no further launches. Waiting for in-flight launches…")
+    for t in threads:
+        t.join()
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Poll Lambda Cloud and auto-grab instances when capacity appears.",
@@ -530,7 +633,7 @@ def parse_args():
         help="Preferred region (e.g. us-west-1). Falls back to any region if unavailable.",
     )
     grab.add_argument(
-        "--poll-interval", type=int, default=30, metavar="SECONDS",
+        "--poll-interval", type=float, default=30, metavar="SECONDS",
         help="How often to poll the API (default: 30s).",
     )
     grab.add_argument(
@@ -540,6 +643,11 @@ def parse_args():
     grab.add_argument(
         "--filesystems", nargs="*", default=[],
         help="Lambda filesystem names to attach (optional).",
+    )
+    grab.add_argument(
+        "--each", action="store_true",
+        help="Launch --count of EACH listed type instead of the first available one "
+             "(one shared poll request per interval).",
     )
     grab.add_argument(
         "--dry-run", action="store_true",
@@ -558,4 +666,7 @@ if __name__ == "__main__":
     if args.command == "list":
         cmd_list_types(args)
     elif args.command == "grab":
-        poll_and_launch(args)
+        if args.each:
+            poll_each(args)
+        else:
+            poll_and_launch(args)
